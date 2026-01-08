@@ -132,12 +132,12 @@ function M.build()
 	print("[gemini] Building server to: " .. target_path)
 
 	local cmd = string.format(
-		"go build -o %s %s/cmd/gemini-server/main.go",
-		vim.fn.shellescape(target_path),
-		vim.fn.shellescape(plugin_root)
+		"go build -o %s ./cmd/gemini-server/main.go",
+		vim.fn.shellescape(target_path)
 	)
 
 	vim.fn.jobstart(cmd, {
+		cwd = plugin_root,
 		on_exit = function(_, code)
 			if code == 0 then
 				print("[gemini] Server built successfully!")
