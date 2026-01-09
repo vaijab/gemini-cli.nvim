@@ -131,10 +131,7 @@ function M.build()
 
 	print("[gemini] Building server to: " .. target_path)
 
-	local cmd = string.format(
-		"go build -o %s ./cmd/gemini-server/main.go",
-		vim.fn.shellescape(target_path)
-	)
+	local cmd = string.format("go build -o %s ./cmd/gemini-server/main.go", vim.fn.shellescape(target_path))
 
 	vim.fn.jobstart(cmd, {
 		cwd = plugin_root,
@@ -177,7 +174,7 @@ function M.setup(opts)
 	local settings_path = vim.fn.stdpath("state") .. "/gemini/settings.json"
 	local instructions_path = vim.fn.stdpath("state") .. "/gemini/gemini-nvim-instructions.md"
 	local state_dir = vim.fn.fnamemodify(settings_path, ":h")
-	
+
 	vim.fn.mkdir(state_dir, "p")
 
 	-- Write the semantic tool instructions
