@@ -1,6 +1,6 @@
 local M = {}
 
--- Store diff state: filePath -> { bufnr, ns_id, original_lines, new_content, job_id }
+-- Store diff state: filePath -> { bufnr, ns_id, original_lines, new_content, job_id, win_info }
 local diff_sessions = {}
 
 function M.ensure_buffer(file_path)
@@ -50,10 +50,60 @@ function M.open_diff(file_path, new_content)
 		return ""
 	end
 	local ui = uis[1]
-	local width = math.floor(ui.width * 0.9)
-	local height = math.floor(ui.height * 0.8)
+	local width = math.floor(ui.width * 0.8)
+	local height = math.floor(ui.height * 0.7)
 	local row = math.floor((ui.height - height) / 2)
 	local col = math.floor((ui.width - width) / 2)
+
+	-- Create Header "Command Bar" Window
+	local rel_path = vim.fn.fnamemodify(file_path, ":.")
+	local file_label = " FILE: "
+	local key1 = " <leader>aa"
+	local desc1 = " Accept "
+	local key2 = " <leader>ad"
+	local desc2 = " Deny "
+
+	local header_text = string.format("%s%s   %s%s  %s%s", file_label, rel_path, key1, desc1, key2, desc2)
+	local info_buf = vim.api.nvim_create_buf(false, true)
+	vim.api.nvim_buf_set_lines(info_buf, 0, -1, false, { header_text })
+	vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = info_buf })
+
+	-- Apply Highlights
+	local ns_id = vim.api.nvim_create_namespace("gemini-diff")
+	local function add_hl(hl, start, finish)
+		vim.api.nvim_buf_set_extmark(info_buf, ns_id, 0, start, {
+			end_col = finish,
+			hl_group = hl,
+		})
+	end
+
+	local cur = 0
+	add_hl("NonText", cur, cur + #file_label)
+	cur = cur + #file_label
+	add_hl("Directory", cur, cur + #rel_path)
+	cur = cur + #rel_path + 3
+	add_hl("WhichKey", cur, cur + #key1)
+	cur = cur + #key1
+	add_hl("WhichKeyDesc", cur, cur + #desc1)
+	cur = cur + #desc1 + 2
+	add_hl("WhichKey", cur, cur + #key2)
+	cur = cur + #key2
+	add_hl("WhichKeyDesc", cur, cur + #desc2)
+
+	local win_info = vim.api.nvim_open_win(info_buf, false, {
+		relative = "editor",
+		width = width,
+		height = 1,
+		row = row,
+		col = col,
+		style = "minimal",
+		border = "rounded",
+	})
+	vim.api.nvim_set_option_value("winhighlight", "Normal:NormalFloat,FloatBorder:FloatBorder", { win = win_info })
+
+	-- Adjust main diff windows row and height
+	row = row + 3
+	height = height - 3
 	local half_width = math.floor(width / 2)
 
 	-- Create Left Window (Original)
@@ -101,11 +151,10 @@ function M.open_diff(file_path, new_content)
 		scratch_buf = scratch_buf,
 		win_left = win_left,
 		win_right = win_right,
+		win_info = win_info,
 		new_content = new_content,
 		job_id = job_id,
 	}
-
-	vim.notify("[gemini] Floating Diff Opened. <leader>aa: Accept, <leader>ad/q: Deny", vim.log.levels.INFO)
 
 	-- Keymaps
 	local function set_maps(buf)
@@ -201,6 +250,9 @@ function M.cleanup_session(file_path)
 	end
 	if session.win_right and vim.api.nvim_win_is_valid(session.win_right) then
 		vim.api.nvim_win_close(session.win_right, true)
+	end
+	if session.win_info and vim.api.nvim_win_is_valid(session.win_info) then
+		vim.api.nvim_win_close(session.win_info, true)
 	end
 
 	-- Wipe scratch buffer
@@ -362,12 +414,11 @@ local function lsp_request(bufnr, method, params, timeout)
 	local required_cap = method_cap_map[method]
 
 	-- Get relevant clients
-	local get_clients = vim.lsp.get_clients or vim.lsp.get_active_clients
 	local clients
 	if method == "workspace/symbol" then
-		clients = get_clients() -- Global search across all clients
+		clients = vim.lsp.get_clients() -- Global search across all clients
 	else
-		clients = get_clients({ bufnr = bufnr })
+		clients = vim.lsp.get_clients({ bufnr = bufnr })
 	end
 
 	local valid_clients = {}
@@ -411,21 +462,27 @@ local function get_smart_position(bufnr, line, col)
 
 		local tree = parser:parse()[1]
 		local root = tree:root()
-		
+
 		-- Strategy 1: Exact position
 		local node = root:named_descendant_for_range(row, col_idx, row, col_idx)
 		if node then
-			if type(node) == "table" then node = node[1] end
+			if type(node) == "table" then
+				node = node[1]
+			end
 			local node_type = node:type()
 			if node_type and node_type:match("identifier") then
 				local r, c, _ = node:start()
 				return { r, c }
 			end
 			-- Handle field/method names inside declarations
+			---@diagnostic disable-next-line: undefined-field
 			if node.child_by_field_name then
+				---@diagnostic disable-next-line: undefined-field
 				local name_node = node:child_by_field_name("name")
 				if name_node then
-					if type(name_node) == "table" then name_node = name_node[1] end
+					if type(name_node) == "table" then
+						name_node = name_node[1]
+					end
 					local r, c, _ = name_node:start()
 					return { r, c }
 				end
@@ -441,7 +498,9 @@ local function get_smart_position(bufnr, line, col)
 			-- Verify with TS if possible
 			local candidate = root:named_descendant_for_range(row, s - 1, row, e - 1)
 			if candidate then
-				if type(candidate) == "table" then candidate = candidate[1] end
+				if type(candidate) == "table" then
+					candidate = candidate[1]
+				end
 				local r, c, _ = candidate:start()
 				return { r, c }
 			end
@@ -587,11 +646,11 @@ function M.get_hover(file_path, line, col)
 				if content.kind and content.value then
 					table.insert(contents, content.value)
 				else
-					for _, c in ipairs(content) do
-						if type(c) == "string" then
-							table.insert(contents, c)
-						elseif c.value then
-							table.insert(contents, c.value)
+					for _, content_item in ipairs(content) do
+						if type(content_item) == "string" then
+							table.insert(contents, content_item)
+						elseif content_item.value then
+							table.insert(contents, content_item.value)
 						end
 					end
 				end
@@ -1184,6 +1243,7 @@ function M.resolve_definition(file_path, line, col)
 		"impl_item",
 	}
 
+	---@type TSNode?
 	local current = node
 	local found_major = nil
 	while current do
