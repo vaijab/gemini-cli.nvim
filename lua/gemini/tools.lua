@@ -27,6 +27,7 @@ function M.ensure_buffer(file_path)
 end
 
 function M.open_diff(file_path, new_content)
+	---@diagnostic disable-next-line: undefined-field
 	local job_id = _G.gemini_job_id
 	file_path = vim.fn.fnamemodify(file_path, ":p")
 	local bufnr = M.ensure_buffer(file_path)
@@ -36,6 +37,9 @@ function M.open_diff(file_path, new_content)
 	-- Create scratch buffer for new content
 	local scratch_buf = vim.api.nvim_create_buf(false, true)
 	local new_lines = vim.split(new_content, "\n")
+	if #new_lines > 0 and new_lines[#new_lines] == "" then
+		table.remove(new_lines)
+	end
 	vim.api.nvim_buf_set_lines(scratch_buf, 0, -1, false, new_lines)
 
 	-- Match filetype and settings
@@ -140,6 +144,8 @@ function M.open_diff(file_path, new_content)
 			vim.opt_local.relativenumber = false
 			vim.opt_local.cursorline = true
 			vim.opt_local.wrap = false
+			vim.opt_local.scrollbind = true
+			vim.opt_local.cursorbind = true
 		end)
 	end
 	setup_win(win_left)
