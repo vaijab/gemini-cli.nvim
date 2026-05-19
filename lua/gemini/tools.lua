@@ -7,7 +7,10 @@ function M.ensure_buffer(file_path)
 	file_path = vim.fn.fnamemodify(file_path, ":p")
 	local bufnr = vim.fn.bufnr(file_path, true)
 	if not vim.api.nvim_buf_is_loaded(bufnr) then
-		vim.fn.bufload(bufnr)
+		-- Only attempt to load if the file actually exists on disk
+		if vim.fn.filereadable(file_path) == 1 then
+			vim.fn.bufload(bufnr)
+		end
 		-- Ensure filetype is set so LSP can attach
 		if vim.api.nvim_get_option_value("filetype", { buf = bufnr }) == "" then
 			vim.api.nvim_buf_call(bufnr, function()
@@ -207,22 +210,21 @@ function M.accept_diff(file_path)
 		return
 	end
 
-	local new_lines = vim.split(session.new_content, "\n")
-	vim.api.nvim_buf_set_lines(session.bufnr, 0, -1, false, new_lines)
-
-	-- Mark as unmodified so external tools (gemini edit)
-	-- can write to disk without triggering a W12 conflict warning.
-	vim.api.nvim_set_option_value("modified", false, { buf = session.bufnr })
+	local lines = vim.api.nvim_buf_get_lines(session.scratch_buf, 0, -1, false)
+	local new_content = table.concat(lines, "\n")
+	if #lines > 0 and lines[#lines] ~= "" then
+		new_content = new_content .. "\n"
+	end
 
 	if session.job_id then
 		vim.rpcnotify(session.job_id, "diff_accepted", {
 			filePath = file_path,
-			content = session.new_content,
+			content = new_content,
 		})
 	end
 
 	M.cleanup_session(file_path)
-	vim.notify("[gemini] Diff accepted.", vim.log.levels.INFO)
+	vim.notify("[gemini] Diff accepted. Applying changes...", vim.log.levels.INFO)
 end
 
 function M.reject_diff(file_path)
@@ -278,70 +280,21 @@ end
 
 function M.close_diff(file_path)
 	file_path = vim.fn.fnamemodify(file_path, ":p")
+	local session = diff_sessions[file_path]
+
+	if not session then
+		return { content = "" }
+	end
+
+	local lines = vim.api.nvim_buf_get_lines(session.scratch_buf, 0, -1, false)
+	local content = table.concat(lines, "\n")
+	if #lines > 0 and lines[#lines] ~= "" then
+		content = content .. "\n"
+	end
+
 	M.cleanup_session(file_path)
-	return { result = "closed" }
-end
 
-function M.get_context(preferred_bufnr)
-	local context = {
-		workspaceState = {
-			openFiles = {},
-			isTrusted = true,
-		},
-	}
-
-	local current_buf = vim.api.nvim_get_current_buf()
-	local buffers = vim.api.nvim_list_bufs()
-
-	-- Determine effective active buffer
-	local current_buftype = vim.api.nvim_get_option_value("buftype", { buf = current_buf })
-	local effective_active_buf = current_buf
-	if current_buftype ~= "" and preferred_bufnr and vim.api.nvim_buf_is_valid(preferred_bufnr) then
-		effective_active_buf = preferred_bufnr
-	end
-
-	for _, bufnr in ipairs(buffers) do
-		if vim.api.nvim_buf_is_loaded(bufnr) then
-			local name = vim.api.nvim_buf_get_name(bufnr)
-			local buftype = vim.api.nvim_get_option_value("buftype", { buf = bufnr })
-
-			if name ~= "" and buftype == "" then
-				local file_info = {
-					path = name,
-					timestamp = os.time(),
-					isActive = (bufnr == effective_active_buf),
-				}
-
-				if file_info.isActive then
-					-- Attempt to find the window for the active buffer
-					local winid = vim.fn.bufwinid(bufnr)
-					if winid ~= -1 then
-						local cursor = vim.api.nvim_win_get_cursor(winid)
-						file_info.cursor = {
-							line = cursor[1],
-							character = cursor[2] + 1,
-						}
-					end
-
-					-- Capture selected text
-					-- If currently in the active buffer, use standard methods.
-					local mode = vim.fn.mode()
-					if mode == "v" or mode == "V" or mode == "\22" then
-						local start_pos = vim.fn.getpos("v")
-						local end_pos = vim.fn.getpos(".")
-						local ok, region = pcall(vim.fn.getregion, start_pos, end_pos, { type = mode })
-						if ok and region then
-							file_info.selectedText = table.concat(region, "\n")
-						end
-					end
-				end
-
-				table.insert(context.workspaceState.openFiles, file_info)
-			end
-		end
-	end
-
-	return context
+	return { content = content }
 end
 
 -- --- LSP & Treesitter Tools ---

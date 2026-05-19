@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"time"
 	"unsafe"
@@ -25,6 +26,15 @@ var (
 	portFlag   = flag.Int("port", 0, "port to listen on (0 for random)")
 	tokenFlag  = flag.String("auth-token", "", "auth token to use (empty for random)")
 )
+
+type InitArgs struct {
+	WorkspacePaths []string `json:"workspacePaths" msgpack:"workspacePaths"`
+	IdeInfo        struct {
+		Name        string `json:"name" msgpack:"name"`
+		DisplayName string `json:"displayName" msgpack:"displayName"`
+	} `json:"ideInfo" msgpack:"ideInfo"`
+	ParentPid int `json:"parentPid" msgpack:"parentPid"`
+}
 
 func main() {
 	flag.Parse()
@@ -103,8 +113,8 @@ func main() {
 		log.Fatalf("Failed to register diff_rejected handler: %v", err)
 	}
 
-	if err := nvimClient.RegisterHandler("initialize", func() {
-		go runInitialization()
+	if err := nvimClient.RegisterHandler("initialize", func(args InitArgs) {
+		go runInitialization(args)
 	}); err != nil {
 		log.Fatalf("Failed to register initialize handler: %v", err)
 	}
@@ -224,7 +234,7 @@ func sendNotification(s *mcp.ServerSession, method string, params any) {
 	}
 }
 
-func runInitialization() {
+func runInitialization(args InitArgs) {
 	log.Println("Initializing MCP Server...")
 	addr := fmt.Sprintf("127.0.0.1:%d", *portFlag)
 	listener, err := net.Listen("tcp", addr)
@@ -248,6 +258,49 @@ func runInitialization() {
 		}
 		return nil
 	}, nil)
+
+	// Create discovery file per IDE companion spec
+	tmpDir := os.TempDir()
+	ideDir := filepath.Join(tmpDir, "gemini", "ide")
+	if err := os.MkdirAll(ideDir, 0755); err != nil {
+		log.Printf("Failed to create ide directory: %v", err)
+	}
+
+	workspaceSeparator := string(os.PathListSeparator)
+	workspacePath := ""
+	for i, p := range args.WorkspacePaths {
+		if i > 0 {
+			workspacePath += workspaceSeparator
+		}
+		workspacePath += p
+	}
+
+	discoveryData := map[string]any{
+		"port":          port,
+		"workspacePath": workspacePath,
+		"authToken":     authToken,
+		"ideInfo":       args.IdeInfo,
+	}
+
+	discoveryFileName := fmt.Sprintf("gemini-ide-server-%d-%d.json", args.ParentPid, port)
+	discoveryFilePath := filepath.Join(ideDir, discoveryFileName)
+
+	data, err := json.MarshalIndent(discoveryData, "", "  ")
+	if err != nil {
+		log.Printf("Failed to marshal discovery data: %v", err)
+	} else if err := os.WriteFile(discoveryFilePath, data, 0644); err != nil {
+		log.Printf("Failed to write discovery file: %v", err)
+	} else {
+		log.Printf("Created discovery file at %s", discoveryFilePath)
+	}
+
+	defer func() {
+		if err := os.Remove(discoveryFilePath); err != nil && !os.IsNotExist(err) {
+			log.Printf("Failed to remove discovery file: %v", err)
+		} else {
+			log.Printf("Removed discovery file at %s", discoveryFilePath)
+		}
+	}()
 
 	log.Printf("MCP Server listening at http://127.0.0.1:%d", port)
 	if err := http.Serve(listener, mcpHandler); err != nil {
@@ -323,11 +376,7 @@ func registerTools(s *mcp.Server) {
 			return nil, nil, fmt.Errorf("%s", errStr)
 		}
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{
-					Text: "Diff view opened in Neovim.",
-				},
-			},
+			Content: []mcp.Content{},
 		}, nil, nil
 	})
 

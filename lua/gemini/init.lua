@@ -104,7 +104,16 @@ local function start_server()
 
 	-- Notify server to initialize once it's connected
 	if job_id > 0 then
-		vim.rpcnotify(job_id, "initialize")
+		local init_args = {
+			workspacePaths = { vim.fn.getcwd() },
+			ideInfo = {
+				name = "neovim",
+				displayName = "Neovim",
+			},
+			parentPid = vim.fn.getpid(),
+		}
+		vim.rpcnotify(job_id, "initialize", init_args)
+
 		if last_opts and last_opts.debug then
 			vim.notify("Gemini: Server initialized", vim.log.levels.DEBUG)
 		end
@@ -208,6 +217,7 @@ You are working alongside a human developer who may be **actively editing** the 
     * **Usage:** Use `getReferences` to see how code is being used across the project.
 
 **INTERACTION HINTS:**
+* **Creating New Files:** When creating a brand-new file, ALWAYS attempt to `read_file` the path first (even if it doesn't exist yet). This "warms up" the path in the internal tracker and prevents a known crash in the `write_file` tool.
 * If you see `[Output Redacted]`, the file is too large. Use `readSymbol` or `getFileOutline` instead.
 * You have access to the user's cursor via `ide/contextUpdate`. If the user says "here" or "this", refer to the active file/cursor in that context.
 ]])
@@ -260,14 +270,15 @@ You are working alongside a human developer who may be **actively editing** the 
 			local current_buf = vim.api.nvim_get_current_buf()
 			local buftype = vim.api.nvim_get_option_value("buftype", { buf = current_buf })
 
-			if buftype ~= "" then
-				return
+			-- We only skip sending if the current buffer is invalid, 
+			-- but we still use the last valid buffer to maintain context.
+			if buftype == "" then
+				last_valid_buf = current_buf
 			end
 
-			last_valid_buf = current_buf
-
-			local context = tools.get_context(last_valid_buf)
+			local context = require("gemini.context").get_context(last_valid_buf)
 			vim.rpcnotify(job_id, "context_update", context)
+
 			if last_opts and last_opts.debug then
 				local active_file = nil
 				for _, file in ipairs(context.workspaceState.openFiles) do
@@ -300,6 +311,19 @@ You are working alongside a human developer who may be **actively editing** the 
 	end
 
 	vim.api.nvim_create_autocmd({ "BufEnter", "CursorMoved", "CursorMovedI", "FocusGained", "ModeChanged" }, {
+		group = group,
+		callback = debounced_send_context,
+	})
+
+	vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+		group = group,
+		callback = function(args)
+			require("gemini.context").remove_file(vim.api.nvim_buf_get_name(args.buf))
+			debounced_send_context()
+		end,
+	})
+
+	vim.api.nvim_create_autocmd("BufFilePost", {
 		group = group,
 		callback = debounced_send_context,
 	})
